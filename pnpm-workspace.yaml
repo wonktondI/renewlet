@@ -1,0 +1,26 @@
+# Workspace 中 apps 是可部署入口，packages 只保留跨运行面共享库。
+packages:
+  - "packages/*"
+  - "apps/*"
+allowBuilds:
+  '@tsparticles/engine': true
+  esbuild: true
+  sharp: true
+  workerd: true
+# pnpm 11 默认拦截发布不足 24 小时的包；本轮明确升级到 same-day latest 时只放行精确版本，避免用 minimumReleaseAge: 0 关闭整个供应链冷却期。
+minimumReleaseAgeExclude:
+  - '@ai-sdk/anthropic@4.0.33'
+  - '@ai-sdk/gateway@4.0.43'
+  - '@ai-sdk/google@4.0.36'
+  - '@ai-sdk/openai-compatible@3.0.25'
+  - '@ai-sdk/openai@4.0.32'
+  - '@ai-sdk/provider-utils@5.0.23'
+  - '@ai-sdk/provider@4.0.6'
+  - '@aws-sdk/client-s3@3.1104.0'
+  - '@aws-sdk/s3-request-presigner@3.1104.0'
+  - '@redocly/cli@2.45.0'
+  - ai@7.0.55
+  - lucide-react@1.29.0
+  - tsx@4.23.9
+  - miniflare@5.20260804.1-alpha
+  - wrangler@4.121.0
