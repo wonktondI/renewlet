@@ -30,6 +30,8 @@ import {
 } from "./use-subscriptions";
 import { subscriptionQueryKeys } from "./subscription-query-cache";
 import { notificationQueryKeys } from "./notification-query-cache";
+import { preload as preloadCalendar } from "@/lib/route-preloads/calendar";
+import { getSubscriptionCalendarRange } from "@/modules/subscriptions/domain/subscription-calendar-range";
 
 type RecurringSubscriptionDraft = Extract<
   SubscriptionDraft,
@@ -41,15 +43,18 @@ type ApiFetchMock = (url: string, schema: unknown, init?: RequestInit) => Promis
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn<ApiFetchMock>(),
   getProductCurrentUserId: vi.fn<() => string | null>(),
+  readProductSessionSnapshot: vi.fn<() => { userId: string; expiresAt: string; verifiedAt: number } | null>(),
 }));
 
-vi.mock("@/lib/api-client", () => ({
+vi.mock("@/lib/api-client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/api-client")>(),
   apiFetch: mocks.apiFetch,
 }));
 
 vi.mock("@/services/product-session", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/product-session")>(),
   getProductCurrentUserId: mocks.getProductCurrentUserId,
+  readProductSessionSnapshot: mocks.readProductSessionSnapshot,
 }));
 
 function createWrapper(
@@ -172,6 +177,7 @@ function requestBody(callIndex: number): unknown {
 
 describe("use-subscriptions mutations", () => {
   beforeEach(() => {
+    mocks.readProductSessionSnapshot.mockReturnValue({ userId: "user-1", expiresAt: "2027-01-01T00:00:00Z", verifiedAt: 1 });
     mocks.apiFetch.mockReset();
     mocks.getProductCurrentUserId.mockReset();
     mocks.getProductCurrentUserId.mockReturnValue("user-1");
@@ -181,6 +187,11 @@ describe("use-subscriptions mutations", () => {
         return { subscription: apiSubscriptionFromDraft(id, subscriptionDraft()) };
       }
       const payload: unknown = JSON.parse(String(init.body));
+      if (init.method === "PATCH") {
+        const { expectedUpdatedAt, ...changes } = subscriptionUpdateBodySchema.parse(payload);
+        expect(expectedUpdatedAt).toBeTruthy();
+        return { subscription: apiSubscriptionFromPayload(id, changes) };
+      }
       return { subscription: apiSubscriptionFromPayload(id, payload) };
     });
   });
@@ -238,7 +249,7 @@ describe("use-subscriptions mutations", () => {
     const subscription = subscriptionFromDraft("sub-1", draft);
 
     await act(async () => {
-      await result.current.mutateAsync({ id: subscription.id, changes: formSubmission(draft) });
+      await result.current.mutateAsync({ id: subscription.id, changes: { ...formSubmission(draft), source: { ...subscription, updatedAt: "2026-08-01T12:34:56Z" } } });
     });
 
     expect(mocks.apiFetch.mock.calls[0]?.[0]).toBe("/api/app/subscriptions/sub-1");
@@ -271,6 +282,8 @@ describe("use-subscriptions mutations", () => {
         id: "sub-1",
         payload: {
           mode: "continue",
+          expectedNextBillingDate: "2026-06-14",
+          expectedUpdatedAt: "2026-01-01T00:00:00.000Z",
           price: "15",
           currency: "USD",
           startDate: null,
@@ -281,6 +294,34 @@ describe("use-subscriptions mutations", () => {
     });
 
     expect(invalidate).toHaveBeenCalledWith({ queryKey: notificationQueryKeys.overview });
+  });
+
+  it.each(["logout", "switch", "verify"])("isolates late renewal results across %s", async (change) => {
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    let release!: (value: unknown) => void;
+    mocks.apiFetch.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const { result } = renderHook(() => useRenewSubscription(), { wrapper: createWrapper(queryClient) });
+    let outcome: unknown;
+    await act(async () => {
+      const pending = result.current.mutateAsync({ id: "sub-1", payload: {
+        mode: "continue", expectedNextBillingDate: "2026-06-14", expectedUpdatedAt: "2026-01-01T00:00:00Z",
+        price: "15", currency: "USD", startDate: null, nextBillingDate: "2026-07-14", autoCalculateNextBillingDate: false,
+      } }).then(() => "saved", (error: unknown) => error);
+      await Promise.resolve();
+      mocks.readProductSessionSnapshot.mockReturnValue(change === "logout" ? null : {
+        userId: change === "switch" ? "user-2" : "user-1", expiresAt: "2027-01-01T00:00:00Z", verifiedAt: 2,
+      });
+      release({ subscription: apiSubscriptionFromDraft("sub-1", subscriptionDraft()) });
+      outcome = await pending;
+    });
+    if (change === "verify") {
+      expect(outcome).toBe("saved");
+      expect(queryClient.getQueryData(subscriptionQueryKeys.detail("sub-1"))).toBeDefined();
+    } else {
+      expect(outcome).toMatchObject({ code: "aborted" });
+      expect(queryClient.getQueryData(subscriptionQueryKeys.detail("sub-1"))).toBeUndefined();
+    }
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(1);
   });
 
   it("sends only quick-action fields through the patch mutation", async () => {
@@ -319,7 +360,7 @@ describe("use-subscriptions mutations", () => {
     await act(async () => {
       await result.current.mutateAsync({
         id: updatedSubscription.id,
-        changes: formSubmission(updatedDraft),
+        changes: { ...formSubmission(updatedDraft), source: { ...updatedSubscription, updatedAt: "2026-08-01T12:34:56Z" } },
       });
     });
 
@@ -377,6 +418,7 @@ describe("use-subscriptions mutations", () => {
 
 describe("use-subscriptions collection queries", () => {
   beforeEach(() => {
+    mocks.readProductSessionSnapshot.mockReturnValue({ userId: "user-1", expiresAt: "2027-01-01T00:00:00Z", verifiedAt: 1 });
     mocks.apiFetch.mockReset();
     mocks.getProductCurrentUserId.mockReset();
     mocks.getProductCurrentUserId.mockReturnValue("user-1");
@@ -481,4 +523,67 @@ describe("use-subscriptions collection queries", () => {
 
     expect(requestSignal?.aborted).toBe(true);
   });
+  it("seeds a calendar from complete analytics without resetting its age", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const updatedAt = Date.now() - 30_000;
+    const included = subscriptionFromDraft("included", subscriptionDraft());
+    const paused = subscriptionFromDraft("paused", subscriptionDraft({ status: "paused" }));
+    queryClient.setQueryData(subscriptionQueryKeys.analytics, [included, paused], { updatedAt });
+    const { result } = renderHook(() => useSubscriptionCalendar(assertDateOnly("2026-12-01"), assertDateOnly("2026-12-31")), { wrapper: createWrapper(queryClient) });
+    expect(result.current.data?.map((item) => item.id)).toEqual(["included"]);
+    expect(result.current.dataUpdatedAt).toBe(updatedAt);
+    expect(mocks.apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("reuses complete analytics during route preloading without resetting its age", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const updatedAt = Date.now() - 30_000;
+    const item = subscriptionFromDraft("included", subscriptionDraft());
+    queryClient.setQueryData(subscriptionQueryKeys.analytics, [item], { updatedAt });
+    queryClient.setQueryData(subscriptionQueryKeys.facets, {
+      total: 1, categoryCounts: { productivity: 1 }, tags: [], visibleCount: 1,
+      hiddenCount: 0, expiredCount: 0, lifetimeCount: 0,
+    });
+    const { from, to } = getSubscriptionCalendarRange(new Date());
+
+    await preloadCalendar(queryClient);
+
+    expect(mocks.apiFetch).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(subscriptionQueryKeys.calendar(from, to))).toEqual([item]);
+    expect(queryClient.getQueryState(subscriptionQueryKeys.calendar(from, to))?.dataUpdatedAt).toBe(updatedAt);
+  });
+
+  it("does not reuse invalidated analytics or a partial list page", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(subscriptionQueryKeys.analytics, [subscriptionFromDraft("old", subscriptionDraft())]);
+    await queryClient.invalidateQueries({ queryKey: subscriptionQueryKeys.analytics, refetchType: "none" });
+    queryClient.setQueryData(subscriptionQueryKeys.page(), { subscriptions: [subscriptionFromDraft("page", subscriptionDraft())] });
+    mocks.apiFetch.mockResolvedValue({ subscriptions: [] });
+    const { result } = renderHook(() => useSubscriptionCalendar(assertDateOnly("2026-12-01"), assertDateOnly("2026-12-31")), { wrapper: createWrapper(queryClient) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual([]);
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses only a covering calendar window and still refetches aged snapshots", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const item = subscriptionFromDraft("covered", subscriptionDraft());
+    const from = assertDateOnly("2026-12-01"), to = assertDateOnly("2026-12-31");
+    queryClient.setQueryData(subscriptionQueryKeys.calendar(assertDateOnly("2026-11-30"), assertDateOnly("2027-01-03")), [item], { updatedAt: Date.now() - 120_000 });
+    mocks.apiFetch.mockResolvedValue({ subscriptions: [] });
+    const { result } = renderHook(() => useSubscriptionCalendar(from, to), { wrapper: createWrapper(queryClient) });
+    expect(result.current.data).toEqual([item]);
+    await waitFor(() => expect(result.current.data).toEqual([]));
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches a wider window instead of treating a narrow cache as complete", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(subscriptionQueryKeys.calendar(assertDateOnly("2026-12-01"), assertDateOnly("2026-12-10")), []);
+    mocks.apiFetch.mockResolvedValue({ subscriptions: [] });
+    const { result } = renderHook(() => useSubscriptionCalendar(assertDateOnly("2026-12-01"), assertDateOnly("2026-12-31")), { wrapper: createWrapper(queryClient) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(1);
+  });
+
 });

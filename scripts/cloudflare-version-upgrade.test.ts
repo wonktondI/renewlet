@@ -156,7 +156,7 @@ function openFixture(filename: string): SqliteUpgradeClient {
 }
 
 function seedUntrustedV2State(db: DatabaseSync): void {
-  // 旧 v2/v3 marker 不能证明 cancelled 语义下的集合投影和调度状态可信；v4 必须从订阅事实重新收敛。
+  // 旧 v2/v3 marker 不能证明 cancelled 语义下的集合投影和调度状态可信；v5 必须从订阅事实重新收敛。
   db.prepare(`INSERT INTO subscription_derived_backfills (name, completed_at)
     VALUES ('subscription-derived-state-v2', ?)`).run(timestamp);
   db.prepare(`INSERT OR REPLACE INTO subscription_list_index (
@@ -366,7 +366,7 @@ function assertRebuiltState(db: DatabaseSync): void {
     repeat_reminder_count: 1,
   });
   assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM subscription_derived_backfills
-    WHERE name = 'subscription-derived-state-v4'`).get()?.["count"], 1);
+    WHERE name = 'subscription-derived-state-v5'`).get()?.["count"], 1);
   assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
 }
 
@@ -409,7 +409,7 @@ function assertUpgradeMarkersComplete(db: DatabaseSync): void {
     migrationNames(),
   );
   assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM subscription_derived_backfills
-    WHERE name = 'subscription-derived-state-v4'`).get()?.["count"], 1);
+    WHERE name = 'subscription-derived-state-v5'`).get()?.["count"], 1);
   assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
 }
 
@@ -467,6 +467,9 @@ for (const fixture of pinnedFixtures) {
         : { action: "skipped", feeds: 0 };
       assert.deepEqual(await prepareCalendarFeedsFor0035(client), expectedFeedAction);
       assert.ok(applyPendingMigrations(client.db) > 0);
+      const balanceRows = client.db.prepare("SELECT balance, balance_currency FROM subscriptions").all();
+      assert.ok(balanceRows.length > 0);
+      assert.ok(balanceRows.every((row) => row["balance"] === null && row["balance_currency"] === null));
       assert.deepEqual(
         await restoreCalendarFeedsAfter0035(client),
         fixture.expectsFeedBackup ? { action: "restored", feeds: 2 } : { action: "skipped", feeds: 0 },
@@ -490,5 +493,72 @@ for (const fixture of pinnedFixtures) {
     } finally {
       client.db.close();
     }
+  });
+}
+
+
+test("0047 adds nullable balance without touching facts, rolls back failure, and retries through the ledger", () => {
+  const client = openFixture("v0.3.21.sql");
+  const name = "0047_subscription_balance.sql";
+  try {
+    const applied = new Set(client.db.prepare("SELECT name FROM d1_migrations").all().map((row) => String(row["name"])));
+    for (const migration of migrationNames()) {
+      if (migration === name) break;
+      if (!applied.has(migration)) applyMigration(client.db, migration);
+    }
+    const facts = historicalFactRows(client.db);
+    // 模拟第二次 ALTER 遇到非预期 schema；第一次 ALTER 和账本必须一同回滚。
+    client.db.exec("ALTER TABLE subscriptions ADD COLUMN balance_currency TEXT");
+    assert.throws(() => applyMigration(client.db, name));
+    assert.equal(client.db.prepare("SELECT name FROM d1_migrations WHERE name = ?").get(name), undefined);
+    assert.ok(!client.db.prepare("PRAGMA table_info(subscriptions)").all().some((row) => row["name"] === "balance"));
+    client.db.exec("ALTER TABLE subscriptions DROP COLUMN balance_currency");
+    assert.equal(applyPendingMigrations(client.db), 1);
+    assert.equal(applyPendingMigrations(client.db), 0);
+    assert.deepEqual(historicalFactRows(client.db), facts);
+    assert.ok(client.db.prepare("SELECT balance, balance_currency FROM subscriptions").all().every((row) => row["balance"] === null && row["balance_currency"] === null));
+    assert.throws(() => client.db.prepare("UPDATE subscriptions SET balance = '0' WHERE id = ?").run(subscriptionId));
+    client.db.prepare("UPDATE subscriptions SET balance = '0', balance_currency = 'EUR' WHERE id = ?").run(subscriptionId);
+    assert.equal(applyPendingMigrations(client.db), 0);
+    assert.equal(client.db.prepare("SELECT balance FROM subscriptions WHERE id = ?").get(subscriptionId)?.["balance"], "0");
+    assert.deepEqual(client.db.prepare("PRAGMA foreign_key_check").all(), []);
+  } finally { client.db.close(); }
+});
+
+for (const [version, marker, hash] of [
+  ["v0.3.28", "v3", "1b376936bed456d2d549025e59a19803b4963285e1efb4a5895770eda1adff01"],
+  ["v0.3.37", "v4", "6d6089b4c6a06ef480a98ac2a6a3e7ff20bf786ecaf0c6006a1a6762287c6513"],
+] as const) {
+  test(`${version} paused schedule upgrades and replays a lost commit acknowledgement`, async (context) => {
+    assert.equal(sha256(readFileSync(resolve(fixturesDir, `${version}.sql`), "utf8")), hash);
+    const client = openFixture(`${version}.sql`);
+    context.after(() => client.db.close());
+    const all = (sql: string) => client.db.prepare(sql).all();
+    assert.ok(client.db.prepare("SELECT name FROM subscription_derived_backfills WHERE name = ?").get(`subscription-derived-state-${marker}`));
+    const schedules = "SELECT * FROM subscription_repeat_schedule ORDER BY subscription_id";
+    assert.equal(all(schedules).length, 2);
+    applyPendingMigrations(client.db);
+    const facts = all("SELECT * FROM subscriptions ORDER BY id");
+    const active = all(schedules).find(row => row["subscription_id"] === "sub_fixture");
+    const originalBatch = client.batch.bind(client);
+    let loseResponse = true;
+    client.batch = async (statements) => {
+      const result = await originalBatch(statements);
+      if (loseResponse) { loseResponse = false; throw new Error("lost batch response"); }
+      return result;
+    };
+    await assert.rejects(runBackfill(client, backfillNow), /lost batch response/);
+    assert.equal(all("SELECT * FROM subscription_derived_backfills WHERE name = 'subscription-derived-state-v5'").length, 0);
+    client.batch = async (statements) => {
+      const result = await originalBatch(statements);
+      if (statements.some(s => s.sql.includes("INSERT INTO subscription_derived_backfills"))) throw new Error("lost marker response");
+      return result;
+    };
+    await assert.rejects(runBackfill(client, backfillNow), /lost marker response/);
+    client.batch = async () => { throw new Error("completed upgrade attempted a write"); };
+    await runBackfill(client, backfillNow);
+    assert.deepEqual(all("SELECT * FROM subscriptions ORDER BY id"), facts);
+    assert.deepEqual(all(schedules), [active]);
+    assert.deepEqual(plainRows(all("SELECT repeat_reminder_count FROM subscription_scheduler_state")), [{ repeat_reminder_count: 1 }]);
   });
 }

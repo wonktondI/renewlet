@@ -19,9 +19,6 @@
   "aiRecognition.apiKeyRequired": "AI API key is required",
   "aiRecognition.baseUrlRequired": "AI Base URL is required",
   "aiRecognition.failed": "AI recognition failed. Check the input and model configuration.",
-  "aiRecognition.fallbackNote.labelSeparator": ", ",
-  "aiRecognition.fallbackNote.labels": "{name} is a subscription service related to {labels}.",
-  "aiRecognition.fallbackNote.website": "{name} is an online service associated with {domain}.",
   "aiRecognition.imageTypeInvalid": "Invalid image type. PNG, JPG, or WebP is required.",
   "aiRecognition.inputRequired": "Paste text or upload an image first.",
   "aiRecognition.modelRequired": "AI model is required",
@@ -267,6 +264,9 @@
   "smtp.startTlsMissing": "SMTP server does not advertise STARTTLS; Cloudflare cannot send email in plaintext.",
   "smtp.serverAuthPlainUnsupported": "SMTP server does not advertise AUTH PLAIN.",
   "smtp.usernamePasswordTogether": "SMTP username and password must be filled together",
+  "subscription.editVersionRequired": "Refresh the page and reopen the subscription before saving.",
+  "subscription.editConflict": "This subscription has changed. Reopen it to review the details.",
+  "subscription.resumeDates": "To resume, set the applicable billing and trial end dates to today or later.",
   "subscription.notFound": "Subscription not found",
   "telegramBot.due.empty": "No matching subscriptions.",
   "telegramBot.due.item": "- {date}: {name} ({type})",
@@ -359,5 +359,9 @@
   "url.privateOrLocalNotAllowedGeneric": "URL cannot point to private or localhost addresses",
   "validation.jsonParseFailed": "JSON parsing failed. Check the format.",
   "subscription.visibilityConflict": "Subscriptions have changed. Your selection is preserved; retry to use the latest data.",
-  "subscription.visibilityFailed": "Unable to update public visibility. Your selection is preserved; please retry."
+  "subscription.visibilityFailed": "Unable to update public visibility. Your selection is preserved; please retry.",
+  "subscription.renewConflict": "The subscription or renewal date has changed. Refresh its details and confirm again.",
+  "subscription.renewNotAllowed": "This subscription cannot be renewed manually in its current state.",
+  "subscription.renewInvalidDate": "The renewal date could not be calculated. Check the subscription dates and billing cycle.",
+  "subscription.renewCostSharingInvalid": "Check member joining dates. Each date must be between the new start and due dates. Refresh renewal details if the members have changed."
 }

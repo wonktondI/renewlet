@@ -8,15 +8,20 @@ import type { SubscriptionFormErrorField, SubscriptionFormErrors } from "@/lib/s
 export interface SubscriptionFormFieldsProps {
   /** 同一页面可能同时渲染新增/编辑弹窗，id 前缀用于保持 label 与错误提示的 a11y 关联唯一。 */
   idPrefix: string;
+  resume?: boolean;
   config: CustomConfig;
   formData: SubscriptionFormState;
   setFormData: Dispatch<SetStateAction<SubscriptionFormState>>;
   /** 由表单宿主统一生成，字段组件不能重建货币列表，否则会绕开设置页货币管理顺序。 */
   currencyOptions: SearchableSelectOption[];
+  balanceCurrencyOptions: SearchableSelectOption[];
+  hasStoredBalance?: boolean | undefined;
   availableTags?: readonly string[] | undefined;
   showLogoField?: boolean | undefined;
   onLogoUploadStatusChange: (status: LogoUploadStatus) => void;
   onFieldChange?: <K extends keyof SubscriptionFormState>(key: K, value: SubscriptionFormState[K]) => void;
+  /** AI 草稿在模型未给出状态时保留可编辑占位值，但必须把状态控件标成待确认。 */
+  pendingStatusConfirmation?: boolean | undefined;
   errors?: SubscriptionFormErrors | undefined;
   onClearFieldError?: ((field: keyof SubscriptionFormErrors) => void) | undefined;
   notificationReminderDays: number;
@@ -36,11 +41,15 @@ export const errorFieldByFormKey: Partial<Record<keyof SubscriptionFormState, Su
   name: "name",
   price: "price",
   currency: "currency",
+  balance: "balance",
+  balanceCurrency: "balanceCurrency",
   billingCycle: "billingCycle",
   customDays: "customDays",
   oneTimeMode: "oneTimeTerm",
   oneTimeTermCount: "oneTimeTerm",
   oneTimeTermUnit: "oneTimeTerm",
+  status: "status",
+  trialEndDate: "trialEndDate",
   startDate: "dates",
   nextBillingDate: "dates",
   reminderType: "reminderDays",
@@ -55,7 +64,9 @@ const structuralErrorFieldsByFormKey: Partial<Record<keyof SubscriptionFormState
   // 这些字段会重塑日期、普通提醒和家庭收款提醒含义；旧提交错误必须失效，下一次提交再按当前形态重新生成。
   billingCycle: ["billingCycle", "dates", "customDays", "oneTimeTerm", "reminderDays", "costSharing"],
   oneTimeMode: ["dates", "oneTimeTerm", "reminderDays", "costSharing"],
+  status: ["dates", "trialEndDate"],
   autoCalculate: ["dates"],
+  balanceEnabled: ["balance", "balanceCurrency"],
 };
 
 export function getErrorFieldsToClearForFormChange(

@@ -23,11 +23,12 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/hooks/use-subscriptions", () => ({
   prefetchSubscriptionDetail: mocks.prefetchDetail,
-  useCreateSubscription: () => ({ mutate: mocks.createMutate }),
-  useUpdateSubscription: () => ({ mutate: mocks.updateMutate }),
+  useCreateSubscription: () => ({ mutateAsync: mocks.createMutate }),
+  useUpdateSubscription: () => ({ mutateAsync: mocks.updateMutate }),
   usePatchSubscription: () => ({ mutate: mocks.patchMutate }),
   useRenewSubscription: () => ({
     mutateAsync: mocks.renewMutateAsync,
+    reset: vi.fn(),
     error: null,
     isPending: false,
   }),
@@ -103,11 +104,11 @@ describe("useSubscriptionCrud", () => {
       result.current.handleEditSubscription("sub-1");
     });
     act(() => {
-      result.current.handleSaveSubscription(submission);
+      result.current.handleSaveSubscription({ ...submission, source: subscription() });
     });
 
     expect(mocks.createMutate).toHaveBeenCalledWith({ ...submission, pinned: false });
-    expect(mocks.updateMutate).toHaveBeenCalledWith({ id: "sub-1", changes: submission });
+    expect(mocks.updateMutate).toHaveBeenCalledWith({ id: "sub-1", changes: { ...submission, source: subscription() } });
   });
 
   it("prefetches the complete detail model on interaction intent", () => {

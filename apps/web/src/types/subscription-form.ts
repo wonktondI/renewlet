@@ -15,6 +15,7 @@ import type {
   RepeatReminderInterval,
   RepeatReminderWindow,
   SubscriptionStatus,
+  Subscription,
 } from "@/types/subscription";
 import type { DateOnly } from "@/lib/time/date-only";
 
@@ -41,6 +42,9 @@ export type SubscriptionFormState = {
   logo: string | undefined;
   price: string;
   currency: string;
+  balanceEnabled: boolean;
+  balance: string;
+  balanceCurrency: string;
   billingCycle: BillingCycle;
   customDays: string;
   customCycleUnit: CustomCycleUnit;
@@ -49,6 +53,8 @@ export type SubscriptionFormState = {
   oneTimeTermUnit: CustomCycleUnit;
   category: Category;
   status: SubscriptionStatus;
+  editSource?: Subscription;
+  trialEndDate?: DateOnly | undefined;
   publicHidden: boolean;
   paymentMethod: PaymentMethod | "";
   /** date-only 在表单内保持字符串，只有日历控件边界才临时转 Date。 */
@@ -77,6 +83,9 @@ export function createSubscriptionFormState(
     logo: undefined,
     price: "",
     currency: "CNY",
+    balanceEnabled: false,
+    balance: "",
+    balanceCurrency: "",
     billingCycle: "monthly",
     customDays: "",
     customCycleUnit: "day",

@@ -34,9 +34,6 @@ export const SERVER_I18N_CATALOGS = {
     "aiRecognition.apiKeyRequired": "请先填写 AI API Key",
     "aiRecognition.baseUrlRequired": "请先填写 AI Base URL",
     "aiRecognition.failed": "AI 识别失败，请检查输入和模型配置。",
-    "aiRecognition.fallbackNote.labelSeparator": "、",
-    "aiRecognition.fallbackNote.labels": "{name} 是提供 {labels}相关产品或服务的订阅服务。",
-    "aiRecognition.fallbackNote.website": "{name} 是与 {domain} 相关的在线服务。",
     "aiRecognition.imageTypeInvalid": "图片类型无效，仅支持 PNG、JPG 或 WebP。",
     "aiRecognition.inputRequired": "请先粘贴文本或上传图片。",
     "aiRecognition.modelRequired": "请先填写 AI 模型。",
@@ -282,6 +279,9 @@ export const SERVER_I18N_CATALOGS = {
     "smtp.startTlsMissing": "SMTP 服务器未声明 STARTTLS，Cloudflare 版不能明文发送邮件。",
     "smtp.serverAuthPlainUnsupported": "SMTP 服务器未声明 AUTH PLAIN。",
     "smtp.usernamePasswordTogether": "SMTP 用户名和密码必须同时填写",
+    "subscription.editVersionRequired": "请刷新页面，重新打开订阅后再保存。",
+    "subscription.editConflict": "订阅信息已变化，请重新打开并核对。",
+    "subscription.resumeDates": "恢复订阅时，请将适用的账单日期和试用结束日期设为今天或以后。",
     "subscription.notFound": "订阅不存在",
     "telegramBot.due.empty": "没有匹配的订阅。",
     "telegramBot.due.item": "- {date}：{name}（{type}）",
@@ -374,7 +374,11 @@ export const SERVER_I18N_CATALOGS = {
     "url.privateOrLocalNotAllowedGeneric": "URL 不允许指向内网或本机地址",
     "validation.jsonParseFailed": "JSON 解析失败：请检查格式是否正确",
     "subscription.visibilityConflict": "订阅数据已变化，已保留选择，请重试以使用最新数据。",
-    "subscription.visibilityFailed": "暂时无法更新公开可见性，已保留选择，请重试。"
+    "subscription.visibilityFailed": "暂时无法更新公开可见性，已保留选择，请重试。",
+    "subscription.renewConflict": "订阅已更新或续订日期发生变化，请刷新信息并重新确认。",
+    "subscription.renewNotAllowed": "此订阅当前不支持手动续订，请检查状态与续订方式。",
+    "subscription.renewInvalidDate": "无法计算续订日期，请检查订阅日期和周期。",
+    "subscription.renewCostSharingInvalid": "请核对成员上车日期，日期须在新的开始日期与到期日期之间。成员信息有变化时，请先刷新续订信息。"
   },
   "en-US": {
     "admin.createFailed": "Failed to create admin",
@@ -397,9 +401,6 @@ export const SERVER_I18N_CATALOGS = {
     "aiRecognition.apiKeyRequired": "AI API key is required",
     "aiRecognition.baseUrlRequired": "AI Base URL is required",
     "aiRecognition.failed": "AI recognition failed. Check the input and model configuration.",
-    "aiRecognition.fallbackNote.labelSeparator": ", ",
-    "aiRecognition.fallbackNote.labels": "{name} is a subscription service related to {labels}.",
-    "aiRecognition.fallbackNote.website": "{name} is an online service associated with {domain}.",
     "aiRecognition.imageTypeInvalid": "Invalid image type. PNG, JPG, or WebP is required.",
     "aiRecognition.inputRequired": "Paste text or upload an image first.",
     "aiRecognition.modelRequired": "AI model is required",
@@ -645,6 +646,9 @@ export const SERVER_I18N_CATALOGS = {
     "smtp.startTlsMissing": "SMTP server does not advertise STARTTLS; Cloudflare cannot send email in plaintext.",
     "smtp.serverAuthPlainUnsupported": "SMTP server does not advertise AUTH PLAIN.",
     "smtp.usernamePasswordTogether": "SMTP username and password must be filled together",
+    "subscription.editVersionRequired": "Refresh the page and reopen the subscription before saving.",
+    "subscription.editConflict": "This subscription has changed. Reopen it to review the details.",
+    "subscription.resumeDates": "To resume, set the applicable billing and trial end dates to today or later.",
     "subscription.notFound": "Subscription not found",
     "telegramBot.due.empty": "No matching subscriptions.",
     "telegramBot.due.item": "- {date}: {name} ({type})",
@@ -737,7 +741,11 @@ export const SERVER_I18N_CATALOGS = {
     "url.privateOrLocalNotAllowedGeneric": "URL cannot point to private or localhost addresses",
     "validation.jsonParseFailed": "JSON parsing failed. Check the format.",
     "subscription.visibilityConflict": "Subscriptions have changed. Your selection is preserved; retry to use the latest data.",
-    "subscription.visibilityFailed": "Unable to update public visibility. Your selection is preserved; please retry."
+    "subscription.visibilityFailed": "Unable to update public visibility. Your selection is preserved; please retry.",
+    "subscription.renewConflict": "The subscription or renewal date has changed. Refresh its details and confirm again.",
+    "subscription.renewNotAllowed": "This subscription cannot be renewed manually in its current state.",
+    "subscription.renewInvalidDate": "The renewal date could not be calculated. Check the subscription dates and billing cycle.",
+    "subscription.renewCostSharingInvalid": "Check member joining dates. Each date must be between the new start and due dates. Refresh renewal details if the members have changed."
   },
   "ru-RU": {
     "admin.createFailed": "Не удалось создать администратора",
@@ -760,9 +768,6 @@ export const SERVER_I18N_CATALOGS = {
     "aiRecognition.apiKeyRequired": "Укажите API-ключ ИИ",
     "aiRecognition.baseUrlRequired": "Укажите Base URL ИИ",
     "aiRecognition.failed": "Не удалось распознать с помощью ИИ. Проверьте входные данные и настройки модели.",
-    "aiRecognition.fallbackNote.labelSeparator": ", ",
-    "aiRecognition.fallbackNote.labels": "{name} — сервис подписки, связанный с категориями: {labels}.",
-    "aiRecognition.fallbackNote.website": "{name} — онлайн-сервис, связанный с {domain}.",
     "aiRecognition.imageTypeInvalid": "Недопустимый тип изображения. Нужен PNG, JPG или WebP.",
     "aiRecognition.inputRequired": "Сначала вставьте текст или загрузите изображение.",
     "aiRecognition.modelRequired": "Укажите модель ИИ",
@@ -1008,6 +1013,9 @@ export const SERVER_I18N_CATALOGS = {
     "smtp.startTlsMissing": "SMTP-сервер не поддерживает STARTTLS, а Cloudflare не может отправлять почту открытым текстом.",
     "smtp.serverAuthPlainUnsupported": "SMTP-сервер не поддерживает AUTH PLAIN.",
     "smtp.usernamePasswordTogether": "Имя пользователя и пароль SMTP нужно заполнить вместе",
+    "subscription.editVersionRequired": "Обновите страницу и снова откройте подписку перед сохранением.",
+    "subscription.editConflict": "Данные подписки изменились. Откройте её ещё раз и проверьте сведения.",
+    "subscription.resumeDates": "Для возобновления укажите применимые даты платежа и окончания пробного периода не ранее сегодняшнего дня.",
     "subscription.notFound": "Подписка не найдена",
     "telegramBot.due.empty": "Подходящих подписок нет.",
     "telegramBot.due.item": "- {date}: {name} ({type})",
@@ -1100,7 +1108,11 @@ export const SERVER_I18N_CATALOGS = {
     "url.privateOrLocalNotAllowedGeneric": "URL не может указывать на частные или локальные адреса",
     "validation.jsonParseFailed": "Не удалось разобрать JSON. Проверьте формат.",
     "subscription.visibilityConflict": "Подписки изменились. Ваш выбор сохранён, повторите попытку, чтобы использовать актуальные данные.",
-    "subscription.visibilityFailed": "Не удалось обновить публичную видимость. Ваш выбор сохранён, повторите попытку."
+    "subscription.visibilityFailed": "Не удалось обновить публичную видимость. Ваш выбор сохранён, повторите попытку.",
+    "subscription.renewConflict": "Подписка или дата продления изменились. Обновите данные и подтвердите ещё раз.",
+    "subscription.renewNotAllowed": "Эту подписку нельзя продлить вручную в текущем состоянии.",
+    "subscription.renewInvalidDate": "Не удалось рассчитать дату продления. Проверьте даты и период подписки.",
+    "subscription.renewCostSharingInvalid": "Проверьте даты присоединения участников: они должны быть между новой датой начала и датой следующей оплаты. Если состав участников изменился, обновите данные продления."
   }
 } as const satisfies Record<ServerI18nLocale, ServerI18nCatalog>;
 

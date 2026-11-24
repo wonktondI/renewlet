@@ -76,6 +76,8 @@ export const SUBSCRIPTION_COLUMN_NAMES = [
   "extra_json",
   "created_at",
   "updated_at",
+  "balance",
+  "balance_currency",
 ] as const;
 
 export const SUBSCRIPTION_COLLECTION_COLUMN_NAMES = [
@@ -102,6 +104,8 @@ export const SUBSCRIPTION_COLLECTION_COLUMN_NAMES = [
   "reminder_days",
   "cost_sharing_json",
   "created_at",
+  "balance",
+  "balance_currency",
 ] as const satisfies readonly (keyof SubscriptionCollectionRow)[];
 
 const assetColumnNames = [
@@ -259,6 +263,21 @@ export async function getSettings(env: Env, userId: string): Promise<ApiAppSetti
   return settingsFromRowJson(row?.settings_json);
 }
 
+/** 集合只消费时区投影，不加载通知/备份凭据；每次按 owner 读取，设置修改会在下一请求生效。 */
+export async function getSettingsTimezone(env: Env, userId: string): Promise<string> {
+  const row = await env.DB.prepare(`
+    SELECT json_type(settings_json) AS settings_type,
+      json_type(settings_json, '$.timezone') AS timezone_type,
+      json_extract(settings_json, '$.timezone') AS timezone
+    FROM settings WHERE user_id = ? LIMIT 1
+  `).bind(userId).first<{ settings_type: string; timezone_type: string | null; timezone: unknown }>();
+  if (row && row.settings_type !== "object") throw new Error("Invalid stored settings object");
+  // 缺行/缺字段沿用 shared 默认值；显式 null、非法时区与损坏 JSON 仍报错，不能悄悄改变业务日界线。
+  return appSettingsSchema.shape.timezone.parse(
+    !row || row.timezone_type === null ? createDefaultAppSettings().timezone : row.timezone,
+  );
+}
+
 /** 首次补建 settings 固定写 auto；ON CONFLICT 后回读可承接并发登录已经创建的账号设置。 */
 export async function ensureSettings(env: Env, userId: string): Promise<ApiAppSettings> {
   const existing = await env.DB.prepare("SELECT settings_json FROM settings WHERE user_id = ? LIMIT 1").bind(userId).first<{ settings_json: string }>();
@@ -335,7 +354,8 @@ function apiOneTimeTermFields(row: Pick<SubscriptionRow, "one_time_term_count" |
   };
 }
 
-export function toApiSubscriptionCollectionItem(row: SubscriptionCollectionRow): ApiSubscriptionCollectionItem {
+/** 集合路由只规范化行，由外层 payload schema 完整校验一次；其它调用者继续使用已校验的转换入口。 */
+export function subscriptionCollectionItemInput(row: SubscriptionCollectionRow) {
   // cost_sharing_json 是 D1 唯一持久化形态，出站必须重新过 shared schema，防止 Worker 与 Docker costSharing 漂移。
   const costSharing = parseJsonObject(row.cost_sharing_json ?? "{}");
   const normalized = {
@@ -343,6 +363,8 @@ export function toApiSubscriptionCollectionItem(row: SubscriptionCollectionRow):
     name: row.name,
     ...(row.logo ? { logo: row.logo } : {}),
     price: moneyFromUnknown(row.price) ?? "0",
+    ...(row.balance == null ? {} : { balance: row.balance }),
+    ...(row.balance_currency == null ? {} : { balanceCurrency: row.balance_currency }),
     currency: row.currency,
     billingCycle: row.billing_cycle,
     ...(row.custom_days === null ? {} : { customDays: row.custom_days }),
@@ -363,7 +385,11 @@ export function toApiSubscriptionCollectionItem(row: SubscriptionCollectionRow):
     reminderDays: row.reminder_days,
     ...(Object.keys(costSharing).length > 0 ? { costSharing } : {}),
   };
-  return apiSubscriptionCollectionItemSchema.parse(normalized);
+  return normalized;
+}
+
+export function toApiSubscriptionCollectionItem(row: SubscriptionCollectionRow): ApiSubscriptionCollectionItem {
+  return apiSubscriptionCollectionItemSchema.parse(subscriptionCollectionItemInput(row));
 }
 
 export function toApiSubscription(row: SubscriptionRow): ApiSubscription {
@@ -391,6 +417,8 @@ export function toPublicApiSubscription(row: SubscriptionRow) {
     name: row.name,
     ...(row.logo ? { logo: row.logo } : {}),
     price: moneyFromUnknown(row.price) ?? "0",
+    ...(row.balance == null ? {} : { balance: row.balance }),
+    ...(row.balance_currency == null ? {} : { balanceCurrency: row.balance_currency }),
     currency: row.currency,
     billingCycle: row.billing_cycle,
     ...(row.custom_days === null ? {} : { customDays: row.custom_days }),
@@ -453,9 +481,9 @@ export async function listNotificationScheduleCandidateSubscriptions(
   // 三类日常候选分支各自走日期索引；UNION 后再由 collector 做 date-only 精确判断。
   const selects = [
     `SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
-      WHERE user_id = ? AND status != 'cancelled' AND reminder_days != ? AND next_billing_date >= ? AND next_billing_date <= ?`,
+      WHERE user_id = ? AND status NOT IN ('paused', 'cancelled') AND reminder_days != ? AND next_billing_date >= ? AND next_billing_date <= ?`,
     `SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
-      WHERE user_id = ? AND status != 'cancelled' AND reminder_days != ? AND trial_end_date >= ? AND trial_end_date <= ?`,
+      WHERE user_id = ? AND status NOT IN ('paused', 'cancelled') AND reminder_days != ? AND trial_end_date >= ? AND trial_end_date <= ?`,
   ];
   const params: unknown[] = [
     userId, DISABLED_REMINDER_DAYS, options.scheduledLocalDate, maxDate,
@@ -463,7 +491,7 @@ export async function listNotificationScheduleCandidateSubscriptions(
   ];
   if (options.includeExpired && options.showExpired) {
     selects.push(`SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
-      WHERE user_id = ? AND status != 'cancelled' AND reminder_days != ? AND next_billing_date < ?`);
+      WHERE user_id = ? AND status NOT IN ('paused', 'cancelled') AND reminder_days != ? AND next_billing_date < ?`);
     params.push(userId, DISABLED_REMINDER_DAYS, options.scheduledLocalDate);
   }
   selects.push(`SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
@@ -482,11 +510,11 @@ export async function listRepeatReminderCandidateSubscriptions(env: Env, userId:
   const maxDate = addDateOnlyDays(localDate, MAX_REMINDER_DAYS);
   const result = await env.DB.prepare(`
     SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
-      WHERE user_id = ? AND status != 'cancelled' AND repeat_reminder_enabled = 1 AND reminder_days != ?
+      WHERE user_id = ? AND status NOT IN ('paused', 'cancelled') AND repeat_reminder_enabled = 1 AND reminder_days != ?
         AND next_billing_date >= ? AND next_billing_date <= ?
     UNION
     SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
-      WHERE user_id = ? AND status != 'cancelled' AND repeat_reminder_enabled = 1 AND reminder_days != ?
+      WHERE user_id = ? AND status NOT IN ('paused', 'cancelled') AND repeat_reminder_enabled = 1 AND reminder_days != ?
         AND status = 'trial' AND trial_end_date >= ? AND trial_end_date <= ?
     ORDER BY created_at DESC, id DESC
   `).bind(
@@ -594,14 +622,28 @@ export async function deleteAssetMetadata(env: Env, userId: string, id: string):
   await env.DB.prepare("DELETE FROM assets WHERE user_id = ? AND id = ?").bind(userId, id).run();
 }
 
-export async function listSubscriptionTags(env: Env, userId: string, limit = 200): Promise<string[]> {
+export async function listSubscriptionTags(env: Env, userId: string, limit = 50): Promise<string[]> {
   // 这些标签名会进入第三方 AI prompt；只传用户已经持久化的标签文本，不带历史订阅名称、金额或备注。
   const rows = await env.DB.prepare(`
-    SELECT tag
-    FROM subscription_tags
-    WHERE user_id = ?
-    GROUP BY tag_norm
-    ORDER BY MAX(updated_at) DESC, tag_norm ASC
+    SELECT tag_row.tag
+    FROM subscription_tags AS tag_row
+    WHERE tag_row.user_id = ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM subscription_tags AS candidate
+        WHERE candidate.user_id = tag_row.user_id
+          AND candidate.tag_norm = tag_row.tag_norm
+          AND (
+            candidate.updated_at > tag_row.updated_at
+            OR (candidate.updated_at = tag_row.updated_at AND candidate.subscription_id > tag_row.subscription_id)
+            OR (
+              candidate.updated_at = tag_row.updated_at
+              AND candidate.subscription_id = tag_row.subscription_id
+              AND candidate.tag > tag_row.tag
+            )
+          )
+      )
+    ORDER BY tag_row.updated_at DESC, tag_row.subscription_id DESC, tag_row.tag_norm ASC
     LIMIT ?
   `)
     .bind(userId, limit)

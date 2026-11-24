@@ -17,6 +17,12 @@ export type ThemeVariant = (typeof THEME_VARIANTS)[number];
 
 /** `expired` 是当前正式状态，状态变更必须同步 D1、PocketBase hook、前端筛选和导入导出。 */
 export const SUBSCRIPTION_STATUSES = ["trial", "active", "expired", "paused", "cancelled"] as const;
+
+/** 暂停与取消只抑制订阅自身的提醒，家庭成员的收款责任独立计算。 */
+export function ordinaryRemindersAllowed(status: string): boolean {
+  return status !== "paused" && status !== "cancelled";
+}
+
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 
 /** `one-time` 默认是买断；携带 oneTimeTermCount/unit 时才按固定权益期摊销并提醒到期。 */
@@ -26,6 +32,25 @@ export type BillingCycle = (typeof BILLING_CYCLES)[number];
 /** 自定义扣费周期单位是跨 Go/PocketBase、D1 和前端日期算法的共同契约；产品 API 不允许缺省。 */
 export const CUSTOM_CYCLE_UNITS = ["day", "week", "month", "year"] as const;
 export type CustomCycleUnit = (typeof CUSTOM_CYCLE_UNITS)[number];
+
+/**
+ * 模型可能返回本地化单位或把数量连在单位前面；这里统一收敛到持久化枚举。
+ * 只处理单位本身，不从文本猜测周期数量，数量仍由调用方单独解析。
+ */
+export function normalizeCustomCycleUnit(value: string | null | undefined): CustomCycleUnit | null {
+  const text = typeof value === "string" ? value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, "") : "";
+  if (!text) return null;
+  if (text === "day" || text === "days" || text === "天" || text === "日") return "day";
+  if (text === "week" || text === "weeks" || text === "周" || text === "星期") return "week";
+  if (text === "month" || text === "months" || text === "月" || text === "个月") return "month";
+  if (text === "year" || text === "years" || text === "年" || text === "年度") return "year";
+  const suffix = text.match(/(days?|天|日|weeks?|周|星期|months?|个月|月|years?|年|年度)$/)?.[1];
+  if (suffix === "day" || suffix === "days" || suffix === "天" || suffix === "日") return "day";
+  if (suffix === "week" || suffix === "weeks" || suffix === "周" || suffix === "星期") return "week";
+  if (suffix === "month" || suffix === "months" || suffix === "月" || suffix === "个月") return "month";
+  if (suffix === "year" || suffix === "years" || suffix === "年" || suffix === "年度") return "year";
+  return null;
+}
 
 /** 通知渠道枚举同时约束设置 payload、cron result 和历史面板筛选。 */
 export const NOTIFICATION_CHANNELS = ["telegram", "notifyx", "webhook", "dingtalk", "wechat", "email", "bark", "serverchan", "discord", "pushplus"] as const;
@@ -57,19 +82,23 @@ const LOCAL_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 export function isValidDateOnly(value: string): boolean {
   // date-only 是跨 Go/PocketBase、D1 和前端的契约；禁止带时区的 ISO datetime 混入。
   if (!DATE_ONLY_RE.test(value)) return false;
-  const timestamp = Date.parse(`${value}T00:00:00Z`);
-  if (Number.isNaN(timestamp)) return false;
-  return new Date(timestamp).toISOString().slice(0, 10) === value;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 export function isValidLocalTime(value: string): boolean {
   return LOCAL_TIME_RE.test(value);
 }
 
+// 同一次设置解析会多次校验同一时区；只记住最近通过 Intl 的名称，不缓存账号设置或增长内存。
+let validTimeZone: string | undefined;
+
 export function isValidTimeZone(value: string): boolean {
+  if (value === validTimeZone) return true;
   try {
     // Intl 是浏览器、Node 和 Workers 都可用的 IANA timezone 共同裁判，避免维护本地时区表。
-    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    validTimeZone = value;
     return true;
   } catch {
     return false;

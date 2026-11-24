@@ -1,5 +1,6 @@
 // Worker 手动续订测试保护 owner 过滤和状态推进，避免 Cloudflare API 与 Go/PocketBase route 分叉。
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { subscriptionRepeatReminderContribution } from "./subscription-scheduler-state";
 import { readSuccessData } from "./api-test-helpers";
 import { renewSubscription } from "./subscriptions";
 import type { Env, SubscriptionRow } from "./types";
@@ -42,7 +43,7 @@ function envFixture(row: SubscriptionRow | null) {
             if (sql.includes("SUM(CASE WHEN auto_renew")) {
               return {
                 auto_renew_count: row?.auto_renew === 1 ? 1 : 0,
-                repeat_reminder_count: row?.repeat_reminder_enabled === 1 && row?.status !== "cancelled" ? 1 : 0,
+                repeat_reminder_count: subscriptionRepeatReminderContribution(row),
               };
             }
             if (sql.includes("SELECT settings_json FROM settings")) {
@@ -98,6 +99,8 @@ function subscriptionRow(overrides: Partial<SubscriptionRow> = {}): Subscription
     name: "Manual Plan",
     logo: null,
     price: "12",
+    balance: null,
+    balance_currency: null,
     currency: "USD",
     billing_cycle: "monthly",
     custom_days: null,
@@ -138,11 +141,13 @@ afterEach(() => {
 
 describe("Cloudflare subscription renewal route", () => {
   const continueBody = {
+    expectedNextBillingDate: "2026-01-31",
+    expectedUpdatedAt: "2026-01-31T00:00:00.000Z",
     mode: "continue",
     price: "15.500000",
     currency: "EUR",
     startDate: null,
-    nextBillingDate: "2026-08-12",
+    nextBillingDate: "2026-02-28",
     autoCalculateNextBillingDate: false,
   };
 
@@ -179,6 +184,7 @@ describe("Cloudflare subscription renewal route", () => {
     const fixture = envFixture(subscriptionRow({ auto_calculate_next_billing_date: 0 }));
 
     const response = await renewSubscription(requestFixture({
+      ...continueBody,
       mode: "restart",
       price: "20",
       currency: "USD",
@@ -245,13 +251,14 @@ describe("Cloudflare subscription renewal route", () => {
     }));
 
     await expect(renewSubscription(requestFixture({
+      ...continueBody,
       mode: "restart",
       price: "20",
       currency: "USD",
       startDate: "2026-08-12",
       nextBillingDate: "2026-09-12",
       autoCalculateNextBillingDate: true,
-    }), fixture.env, "sub_manual")).rejects.toMatchObject({ status: 400, code: "INVALID_PAYLOAD" });
+    }), fixture.env, "sub_manual")).rejects.toMatchObject({ status: 400, code: "SUBSCRIPTION_RENEW_COST_SHARING_INVALID" });
 
     expect(fixture.updateParams).toBeNull();
   });

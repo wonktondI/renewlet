@@ -30,6 +30,7 @@ interface UseSubscriptionDialogSessionParams {
 
 interface SubscriptionDialogSession {
   formData: SubscriptionFormState;
+  hasStoredBalance: boolean;
   setFormData: Dispatch<SetStateAction<SubscriptionFormState>>;
   logoUploadStatus: LogoUploadStatus;
   setLogoUploadStatus: Dispatch<SetStateAction<LogoUploadStatus>>;
@@ -50,6 +51,8 @@ export function useSubscriptionDialogSession({
   enabledCurrencyValues,
 }: UseSubscriptionDialogSessionParams): SubscriptionDialogSession {
   const pendingCreateSessionResetRef = useRef(false);
+  const initializedSnapshotRef = useRef<string | null>(null);
+  const [hasStoredBalance, setHasStoredBalance] = useState(mode === "edit" && editSubscription?.balance !== undefined);
   const [logoUploadStatus, setLogoUploadStatus] = useState<LogoUploadStatus>("idle");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [formErrors, setFormErrors] = useState<SubscriptionFormErrors>({});
@@ -58,7 +61,7 @@ export function useSubscriptionDialogSession({
     mode === "create"
       ? createCreateFormState(defaultCreateCurrency, initialSubscription)
       : editSubscription
-        ? subscriptionToFormState(editSubscription)
+        ? { ...subscriptionToFormState(editSubscription), editSource: editSubscription }
         : createSubscriptionFormState(),
   );
 
@@ -96,6 +99,7 @@ export function useSubscriptionDialogSession({
 
   useEffect(() => {
     if (open) return;
+    initializedSnapshotRef.current = null;
     if (mode === "create") {
       pendingCreateSessionResetRef.current = true;
     }
@@ -108,8 +112,7 @@ export function useSubscriptionDialogSession({
     if (initialSubscription) return;
 
     const isPristine = isCreateFormPristine(formData);
-    const currencyDisabled = !enabledCurrencyValues.includes(formData.currency);
-    const shouldSync = (!createCurrencyManuallySelected && isPristine) || currencyDisabled;
+    const shouldSync = !createCurrencyManuallySelected && isPristine;
 
     // 只在空白态同步默认货币，避免 settings 异步刷新覆盖用户正在输入的新增草稿。
     if (shouldSync && formData.currency !== defaultCreateCurrency) {
@@ -130,19 +133,24 @@ export function useSubscriptionDialogSession({
     if (!open) return;
     if (!initialSubscription) return;
 
-    // 克隆模式每次打开都从点击时的订阅快照预填；打开后用户编辑不再跟随后台列表刷新。
-    setFormData(subscriptionToFormState(initialSubscription));
+    if (initializedSnapshotRef.current === initialSubscription.id) return;
+    initializedSnapshotRef.current = initialSubscription.id;
+    // 详情只在本次打开首次到达时初始化，后台刷新和写请求结果不得覆盖会话草稿。
+    setFormData(createCreateFormState(defaultCreateCurrency, initialSubscription));
     setCreateCurrencyManuallySelected(false);
     resetTransientState();
-  }, [initialSubscription, mode, open, resetTransientState]);
+  }, [defaultCreateCurrency, initialSubscription, mode, open, resetTransientState]);
 
   useLayoutEffect(() => {
     if (mode !== "edit") return;
     if (!open) return;
     if (!editSubscription) return;
 
-    // edit 每次打开都回到订阅快照；未保存修改只属于上一次弹窗 session。
-    setFormData(subscriptionToFormState(editSubscription));
+    if (initializedSnapshotRef.current === editSubscription.id) return;
+    initializedSnapshotRef.current = editSubscription.id;
+    setHasStoredBalance(editSubscription.balance !== undefined);
+    // 原始详情与草稿同时冻结，后台刷新不能替旧草稿换上新版本号。
+    setFormData({ ...subscriptionToFormState(editSubscription), editSource: editSubscription });
     setCreateCurrencyManuallySelected(false);
     resetTransientState();
   }, [editSubscription, mode, open, resetTransientState]);
@@ -165,6 +173,7 @@ export function useSubscriptionDialogSession({
 
   return {
     formData,
+    hasStoredBalance,
     setFormData,
     logoUploadStatus,
     setLogoUploadStatus,
@@ -179,7 +188,7 @@ export function useSubscriptionDialogSession({
 
 function createCreateFormState(defaultCreateCurrency: string, initialSubscription?: Subscription | null): SubscriptionFormState {
   return initialSubscription
-    ? subscriptionToFormState(initialSubscription)
+    ? { ...subscriptionToFormState(initialSubscription), balanceEnabled: false, balance: "", balanceCurrency: "" }
     : createSubscriptionFormState({ currency: defaultCreateCurrency });
 }
 
@@ -189,6 +198,9 @@ function isCreateFormPristine(formData: SubscriptionFormState): boolean {
     formData.name === baseline.name &&
     formData.logo === baseline.logo &&
     formData.price === baseline.price &&
+    formData.balanceEnabled === baseline.balanceEnabled &&
+    formData.balance === baseline.balance &&
+    formData.balanceCurrency === baseline.balanceCurrency &&
     formData.billingCycle === baseline.billingCycle &&
     formData.customDays === baseline.customDays &&
     formData.customCycleUnit === baseline.customCycleUnit &&
@@ -216,7 +228,7 @@ function isCreateFormPristine(formData: SubscriptionFormState): boolean {
   );
 }
 
-function subscriptionToFormState(subscription: Subscription): SubscriptionFormState {
+export function subscriptionToFormState(subscription: Subscription): SubscriptionFormState {
   const isDisabledReminder = subscription.reminderDays === DISABLED_REMINDER_DAYS;
   const isInheritReminder = subscription.reminderDays === INHERIT_REMINDER_DAYS;
   const isPresetReminder = REMINDER_DAYS_OPTIONS.some((opt) => opt.value === subscription.reminderDays);
@@ -227,6 +239,9 @@ function subscriptionToFormState(subscription: Subscription): SubscriptionFormSt
     logo: subscription.logo,
     price: subscription.price.toString(),
     currency: subscription.currency,
+    balanceEnabled: subscription.balance !== undefined,
+    balance: subscription.balance ?? "",
+    balanceCurrency: subscription.balanceCurrency ?? "",
     billingCycle: subscription.billingCycle,
     customDays: subscription.customDays?.toString() || "",
     customCycleUnit: subscription.billingCycle === "custom" ? subscription.customCycleUnit : "day",
@@ -235,6 +250,7 @@ function subscriptionToFormState(subscription: Subscription): SubscriptionFormSt
     oneTimeTermUnit: subscription.billingCycle === "one-time" ? subscription.oneTimeTermUnit ?? "month" : "month",
     category: subscription.category,
     status: subscription.status,
+    trialEndDate: subscription.trialEndDate,
     publicHidden: subscription.publicHidden,
     paymentMethod: subscription.paymentMethod || "",
     startDate: subscription.startDate ?? undefined,

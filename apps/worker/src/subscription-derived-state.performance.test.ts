@@ -71,12 +71,14 @@ describe.each(subscriptionPerformanceFixture.scenarios)("Worker derived mutation
   });
 });
 
-describe.each(subscriptionPerformanceFixture.scenarios)("Worker collection read budget: $size", (scenario) => {
-  it("uses one private-page query, two bounded-index queries, and indexed fact lookups", async () => {
+describe.each(subscriptionPerformanceFixture.scenarios.flatMap((scenario) =>
+  (["none", "mixed", "all"] as const).map((balanceMode) => ({ ...scenario, balanceMode })),
+))("Worker collection read budget: $size / $balanceMode", (scenario) => {
+  it("uses one query for either collection shape and indexed fact lookups", async () => {
     const db = openSubscriptionReadDatabase();
     try {
       const { final } = buildSubscriptionPerformanceScenario(scenario.size);
-      seedSubscriptionReadRows(db, final);
+      seedSubscriptionReadRows(db, final, scenario.balanceMode);
       const database = new SubscriptionReadD1Database(db);
       const env = {
         DB: database as unknown as D1Database,
@@ -91,15 +93,17 @@ describe.each(subscriptionPerformanceFixture.scenarios)("Worker collection read 
         expect(privatePage.total).toBe(scenario.expected.total);
         expect(privatePage.rows).toHaveLength(Math.min(51, scenario.expected.total));
         expect(database.readQueries).toBe(1);
-        console.info(`[perf] worker_sqlite ${JSON.stringify({ size: scenario.size, sample, operation: "private-page", reads: database.reads })}`);
+        console.info(`[perf] worker_sqlite ${JSON.stringify({ size: scenario.size, balanceMode: scenario.balanceMode, sample, operation: "private-page", reads: database.reads })}`);
 
         database.readQueries = 0;
         database.reads.length = 0;
         const boundedPage = await listBoundedSubscriptionsForQuery(env, "subscription-perf-owner", {}, "2026-08-17", scenario.size);
         expect(boundedPage).toMatchObject({ total: scenario.expected.total, exceeded: false });
         expect(boundedPage.rows).toHaveLength(scenario.expected.total);
-        expect(database.readQueries).toBe(scenario.operationBudget.listReadQueries);
-        console.info(`[perf] worker_sqlite ${JSON.stringify({ size: scenario.size, sample, operation: "bounded-index", reads: database.reads })}`);
+        expect(database.readQueries).toBe(1);
+        expect(boundedPage.rows.slice(0, privatePage.rows.length).map((row) => row.id))
+          .toEqual(privatePage.rows.map((row) => row.id));
+        console.info(`[perf] worker_sqlite ${JSON.stringify({ size: scenario.size, balanceMode: scenario.balanceMode, sample, operation: "bounded-index", reads: database.reads })}`);
       }
 
       const queryPlanFilters = [
@@ -156,6 +160,18 @@ describe("Worker collection SQL limits", () => {
 
       expect(page).toEqual({ rows: [], total: 5_001, exceeded: true });
       expect(database.readQueries).toBe(1);
+      let factValuesRead = 0;
+      db.function("observe_fact", (value) => { if (value !== null) factValuesRead += 1; return value; });
+      const plan = boundedSubscriptionCollectionQueryPlan("subscription-perf-owner", {}, "2026-08-17", 5_001);
+      db.prepare(plan.sql.replace("sub.price", "observe_fact(sub.price)"))
+        .all(...(plan.params as SQLInputValue[]));
+      expect(factValuesRead).toBe(0);
+      const allowed = boundedSubscriptionCollectionQueryPlan("subscription-perf-owner", {}, "2026-08-17", 5_002);
+      db.prepare(allowed.sql.replace("sub.price", "observe_fact(sub.price)"))
+        .all(...(allowed.params as SQLInputValue[]));
+      expect(factValuesRead).toBe(5_001);
+      expect(await listBoundedSubscriptionsForQuery(env, "another-owner", {}, "2026-08-17", 5_000))
+        .toEqual({ rows: [], total: 0, exceeded: false });
     } finally {
       db.close();
     }
@@ -183,7 +199,7 @@ describe("Worker collection SQL limits", () => {
       const page = subscriptionCollectionPageQueryPlan("subscription-perf-owner", filters, "2026-08-17", 51);
       const bounded = boundedSubscriptionCollectionQueryPlan("subscription-perf-owner", filters, "2026-08-17", 5_001);
 
-      for (const plan of [page, bounded.preflight, bounded.facts]) {
+      for (const plan of [page, bounded]) {
         expect(plan.params.length).toBeLessThan(100);
         expect(() => db.prepare(plan.sql).all(...(plan.params as SQLInputValue[]))).not.toThrow();
       }
@@ -255,6 +271,8 @@ function toSubscriptionRow(
     name: record.name,
     logo: null,
     price: record.price,
+    balance: null,
+    balance_currency: null,
     currency: record.currency,
     billing_cycle: record.billingCycle,
     custom_days: record.customDays,
@@ -296,6 +314,8 @@ function openSubscriptionReadDatabase(): DatabaseSync {
       name TEXT NOT NULL,
       logo TEXT,
       price TEXT NOT NULL,
+      balance TEXT,
+      balance_currency TEXT,
       currency TEXT NOT NULL,
       billing_cycle TEXT NOT NULL,
       custom_days INTEGER,
@@ -352,13 +372,13 @@ function openSubscriptionReadDatabase(): DatabaseSync {
   return db;
 }
 
-function seedSubscriptionReadRows(db: DatabaseSync, records: SubscriptionPerformanceRecord[]): void {
+function seedSubscriptionReadRows(db: DatabaseSync, records: SubscriptionPerformanceRecord[], balanceMode: "none" | "mixed" | "all" = "none"): void {
   const insertFact = db.prepare(`INSERT INTO subscriptions (
     id, user_id, name, logo, price, currency, billing_cycle, custom_days, custom_cycle_unit,
     one_time_term_count, one_time_term_unit, category, status, pinned, public_hidden, payment_method,
     start_date, next_billing_date, auto_renew, auto_calculate_next_billing_date, trial_end_date,
-    reminder_days, cost_sharing_json, created_at
-  ) VALUES (${Array.from({ length: 24 }, () => "?").join(", ")})`);
+    reminder_days, cost_sharing_json, created_at, balance, balance_currency
+  ) VALUES (${Array.from({ length: 26 }, () => "?").join(", ")})`);
   const insertIndex = db.prepare(`INSERT INTO subscription_list_index (
     subscription_id, user_id, status, billing_cycle, one_time_term_count, next_billing_date, pinned, created_at
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -366,12 +386,14 @@ function seedSubscriptionReadRows(db: DatabaseSync, records: SubscriptionPerform
   try {
     for (const record of records) {
       const row = toSubscriptionRow(record);
+      const hasBalance = balanceMode === "all" || (balanceMode === "mixed" && record.index % 2 === 0);
       insertFact.run(
         row.id, row.user_id, row.name, row.logo, row.price, row.currency, row.billing_cycle,
         row.custom_days, row.custom_cycle_unit, row.one_time_term_count, row.one_time_term_unit,
         row.category, row.status, row.pinned, row.public_hidden, row.payment_method, row.start_date,
         row.next_billing_date, row.auto_renew, row.auto_calculate_next_billing_date, row.trial_end_date,
         row.reminder_days, row.cost_sharing_json, row.created_at,
+        hasBalance ? "123456.123456" : null, hasBalance ? "EUR" : null,
       );
       insertIndex.run(
         row.id, row.user_id, row.status, row.billing_cycle, row.one_time_term_count,

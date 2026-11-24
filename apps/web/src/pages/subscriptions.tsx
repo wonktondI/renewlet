@@ -220,6 +220,9 @@ const Subscriptions = () => {
     editingSubscription,
     editingCollectionItem,
     editDialogOpen,
+    resumeEdit,
+    editRestoreFocusRef,
+    handlePauseSubscription,
     cloningSubscription,
     cloningCollectionItem,
     cloneDialogOpen,
@@ -241,6 +244,8 @@ const Subscriptions = () => {
     handleTogglePublicHiddenSubscription,
     handleRenewSubscription,
     handleSubmitRenewSubscription,
+    handleRefreshRenewSubscription,
+    handleEditRenewSubscription,
     handleSaveSubscription,
     handleSaveClonedSubscription,
     handleEditDialogOpenChange,
@@ -341,7 +346,7 @@ const Subscriptions = () => {
       )}>
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">{t("subscriptions.title")}</h1>
+            <h1 tabIndex={-1} data-subscription-list-heading="" className="text-2xl font-bold text-foreground">{t("subscriptions.title")}</h1>
             <p className="mt-1 text-sm text-muted-foreground">
               {t("subscriptions.count", { count: displayedTotal })}
               {unfilteredTotal !== undefined && ` ${t("subscriptions.filteredCount", { count: unfilteredTotal })}`}
@@ -680,6 +685,7 @@ const Subscriptions = () => {
               categoryByValue={categoryByValue}
               paymentMethodByValue={paymentMethodByValue}
               onEdit={handleEditSubscription}
+              onPause={handlePauseSubscription}
               onDelete={handleDeleteSubscription}
               onClone={handleCloneSubscription}
               onTogglePinned={handleTogglePinnedSubscription}
@@ -719,6 +725,8 @@ const Subscriptions = () => {
         subscription={editingSubscription}
         loadingPreview={editingCollectionItem}
         open={editDialogOpen}
+        restoreFocusRef={editRestoreFocusRef}
+        resume={resumeEdit}
         onOpenChange={handleEditDialogOpenChange}
         onSave={handleSaveSubscription}
         availableTags={allTags}
@@ -740,7 +748,9 @@ const Subscriptions = () => {
         open={renewDialogOpen}
         today={today}
         submitting={renewSubmitting}
-        error={renewError instanceof Error ? renewError.message : null}
+        error={renewError}
+        onRefresh={handleRefreshRenewSubscription}
+        onEdit={handleEditRenewSubscription}
         restoreFocusRef={renewRestoreFocusRef}
         onOpenChange={handleRenewDialogOpenChange}
         onSubmit={handleSubmitRenewSubscription}

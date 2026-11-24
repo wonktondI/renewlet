@@ -6,6 +6,7 @@ import {
   costSharingMemberJoinedDatesWithinRange,
 } from "../cost-sharing";
 import { moneyStringSchema } from "../money";
+import { subscriptionBalanceCheck, subscriptionBalanceWriteShape, subscriptionBalanceReadShape } from "./subscription-balance";
 import { apiSuccessResponseSchema } from "./api";
 import { okResponseSchema } from "./common";
 import {
@@ -215,6 +216,7 @@ export function costSharingMemberJoinedDateRangeIsValid(value: {
  * PocketBase schema/hooks、D1 row 转换和前端 domain 类型，不能只改某一个运行面。
  */
 const subscriptionWriteFieldShape = {
+  ...subscriptionBalanceWriteShape,
   name: z.string().trim().min(1).max(120),
   logo: optionalLogoReferenceSchema,
   price: moneyStringSchema,
@@ -256,6 +258,7 @@ const subscriptionCreateBodyShape = {
 
 export const subscriptionCreateBodySchema = z.object(subscriptionCreateBodyShape)
   .strict()
+  .check(subscriptionBalanceCheck)
   .refine(customCycleFieldsAreConsistent, {
     path: ["customCycleUnit"],
     message: "Custom cycle count and unit are required",
@@ -285,9 +288,13 @@ export const subscriptionCreateBodySchema = z.object(subscriptionCreateBodyShape
     message: "Cost sharing member joined date is outside the subscription date range",
   });
 
-export const subscriptionUpdateBodySchema = z.object(subscriptionWriteFieldShape)
+export const subscriptionUpdateBodySchema = z.object({
+  ...subscriptionWriteFieldShape,
+  expectedUpdatedAt: z.string().max(64).datetime({ offset: true }),
+})
   .strict()
   .partial()
+  .check(subscriptionBalanceCheck)
   .refine(customCycleFieldsAreConsistent, {
     path: ["customCycleUnit"],
     message: "Custom cycle count and unit are required",
@@ -303,15 +310,25 @@ export const subscriptionUpdateBodySchema = z.object(subscriptionWriteFieldShape
     path: ["oneTimeTermCount"],
     message: "Invalid one-time term",
   })
-  .refine((obj) => Object.keys(obj).length > 0, { message: "Empty payload" });
+  .refine((obj) => Object.keys(obj).some((key) => key !== "expectedUpdatedAt"), { message: "Empty payload" });
 
 export const subscriptionRenewBodySchema = z.object({
+  // 同一次确认绑定原账单日和服务端版本，过期草稿或响应丢失后的重放不能多推进一期。
+  expectedNextBillingDate: dateInputSchema,
+  expectedUpdatedAt: z.string().max(64).datetime({ offset: true }),
   mode: z.enum(SUBSCRIPTION_RENEW_MODES),
   price: moneyStringSchema,
   currency: z.string().trim().regex(/^[A-Z]{3}$/),
   startDate: nullableDateInputSchema.optional(),
   nextBillingDate: dateInputSchema,
   autoCalculateNextBillingDate: z.boolean(),
+  // 重开只允许确认成员日期；成员身份、金额及提醒配置仍从当前事实读取。
+  costSharingMemberJoinedDates: z.array(z.object({
+    id: z.string().trim().min(1).max(80),
+    joinedDate: dateInputSchema,
+  }).strict()).max(20).refine((members) => new Set(members.map((member) => member.id)).size === members.length, {
+    message: "Duplicate cost sharing member",
+  }).optional(),
 }).strict()
   .describe("手动续订请求：显式选择延续原锚点或从新日期重开，并允许同步调整价格/币种。")
   .refine((value) => value.mode !== "restart" || value.startDate !== undefined && value.startDate !== null, {
@@ -321,9 +338,14 @@ export const subscriptionRenewBodySchema = z.object({
   .refine((value) => value.startDate === undefined || value.startDate === null || value.nextBillingDate >= value.startDate, {
     path: ["nextBillingDate"],
     message: "Next billing date must not be before start date",
+  })
+  .refine((value) => value.mode === "restart" || value.costSharingMemberJoinedDates === undefined, {
+    path: ["costSharingMemberJoinedDates"],
+    message: "Member dates can only be changed when restarting a subscription",
   });
 
 const apiSubscriptionCollectionItemShape = {
+  ...subscriptionBalanceReadShape,
   id: z.string(),
   name: z.string(),
   price: moneyStringSchema,
@@ -457,6 +479,7 @@ export const apiSubscriptionCollectionItemSchema = z.union(createSubscriptionCyc
   ...apiSubscriptionCollectionItemShape,
   logo: logoReferenceSchema.optional(),
 })).check(
+  subscriptionBalanceCheck,
   startDateRequirementCheck,
   subscriptionDateOrderCheck,
   subscriptionRenewalFieldsCheck,
@@ -471,6 +494,7 @@ export function createApiSubscriptionSchema(logoSchema: z.ZodType<string>) {
     logo: logoSchema.optional(),
     ...apiSubscriptionDetailShape,
   })).check(
+    subscriptionBalanceCheck,
     startDateRequirementCheck,
     subscriptionDateOrderCheck,
     subscriptionRenewalFieldsCheck,

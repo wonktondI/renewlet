@@ -4,14 +4,14 @@
  * 用途：
  * - 在仪表盘与订阅列表展示订阅概览
  * - 提供编辑/复制/删除入口
- * - 根据续费/试用到期情况做提示（颜色/动画）
+ * - 根据续费/试用到期情况显示日期提示
  *
  * 注意： 卡片直接读取自定义配置来显示分类颜色。若未来支持服务端渲染卡片，
  * 需要把 label/color view model 从上层传入。
  */
 
 import { Checkbox } from "@/components/ui/checkbox";
-import { memo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { memo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import type { ConfigItem } from '@/types/config';
 import {
   DEFAULT_NOTIFICATION_REMINDER_DAYS,
@@ -21,8 +21,8 @@ import {
 } from '@/types/subscription';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { colorWithAlpha } from '@/lib/color';
-import { Calendar, MoreHorizontal, CalendarClock, Bell, CreditCard, CalendarPlus, Copy, Eye, EyeOff, Gauge, Pencil, Pin, PinOff, RotateCw, Trash2 } from 'lucide-react';
+import { categoryBadgeStyle } from '@/lib/color';
+import { Wallet, Calendar, MoreHorizontal, CalendarClock, Bell, CreditCard, CalendarPlus, Copy, Eye, EyeOff, Gauge, Pause, Play, Pencil, Pin, PinOff, RotateCw, Trash2 } from 'lucide-react';
 import {
   daysBetweenDateOnly,
   type DateOnly,
@@ -52,7 +52,7 @@ import {
 import { useI18n } from '@/i18n/I18nProvider';
 import { SubscriptionLogo } from '@/components/subscription-logo';
 import { SubscriptionStatusBadge } from '@/components/subscription-status-badge';
-import { formatCompactCurrencyAmount } from '@/lib/currency';
+import { formatCurrency as formatPreciseCurrency, formatCompactCurrencyAmount } from '@/lib/currency';
 import {
   formatBillingCycleLabel,
   isOneTimeBuyout,
@@ -74,7 +74,8 @@ interface SubscriptionCardProps {
   /** 展示模式：grid（卡片）/ list（列表行）。 */
   viewMode?: 'grid' | 'list';
   /** 编辑动作只传 id，页面控制器再从当前缓存快照取完整对象，避免卡片持有编辑弹窗状态。 */
-  onEdit?: (id: string) => void;
+  onEdit?: (id: string, intent?: "resume", trigger?: HTMLElement | null) => void;
+  onPause?: ((id: string, status: "active" | "trial", trigger: HTMLElement | null) => Promise<void>) | undefined;
   /** 删除动作只上抛 id，真正 mutation 和缓存失效统一留在页面应用层。 */
   onDelete?: (id: string) => void;
   /** 复制动作只上抛 id，页面控制器负责打开克隆弹窗并创建新记录。 */
@@ -87,7 +88,7 @@ interface SubscriptionCardProps {
   selected?: boolean;
   onSelect?: ((id: string, selected: boolean) => void) | undefined;
   /** 手动续订动作由页面持有 mutation，卡片只负责可见入口。 */
-  onRenew?: (id: string) => void;
+  onRenew?: (id: string, restoreTarget?: HTMLElement | null) => void;
   /** 卡片主体 primary action：打开只读详情；菜单内动作保持独立。 */
   onViewDetails?: (id: string) => void;
   /** 日历弹层需要完整 detail DTO，由页面级控制器按 intent 读取。 */
@@ -126,16 +127,19 @@ type SubscriptionCardMetaItem = {
 };
 
 const metaToneClassNames = {
-  muted: "text-muted-foreground",
-  warning: "text-warning",
+  muted: "text-card-caption",
+  warning: "text-warning-ink",
 } satisfies Record<SubscriptionCardMetaTone, string>;
 
 function SubscriptionCardMetaToken({ item }: { item: SubscriptionCardMetaItem }) {
+  const isPrimaryDate = item.key === "start-date" || item.key === "billing-date";
+
   return (
     <div
       data-testid={`subscription-card-meta-${item.key}`}
       className={cn(
-        "inline-flex min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap text-xs",
+        "inline-flex min-w-0 max-w-full items-center whitespace-nowrap text-xs",
+        isPrimaryDate ? "gap-1" : "gap-1.5",
         item.tabular && "tabular-nums",
         metaToneClassNames[item.tone],
       )}
@@ -153,10 +157,10 @@ function SubscriptionCardMetaFlow({ items }: { items: readonly SubscriptionCardM
   return (
     <div data-testid="subscription-card-meta-flow" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:gap-x-4">
       {dateItems.length > 0 ? (
-        // 日期组是移动卡片的扫描单位，避免付款方式等次要字段抢占到期日期位置。
+        // 日期组使用紧凑间距且不为次要字段收缩，避免 Linux 字体较宽时把两项主日期拆行。
         <div
           data-testid="subscription-card-meta-date-group"
-          className="inline-flex min-w-0 max-w-full flex-[0_1_auto] flex-wrap items-center gap-x-2 gap-y-1 sm:gap-x-4"
+          className="inline-flex min-w-0 max-w-full shrink-0 flex-wrap items-center gap-x-1 gap-y-1 sm:gap-x-4"
         >
           {dateItems.map((item) => <SubscriptionCardMetaToken key={item.key} item={item} />)}
         </div>
@@ -171,6 +175,7 @@ function SubscriptionCardComponent({
   subscription,
   viewMode = 'grid',
   onEdit,
+  onPause,
   onDelete,
   onClone,
   onTogglePinned,
@@ -194,12 +199,10 @@ function SubscriptionCardComponent({
   const categoryConfig = categoryByValue.get(subscription.category);
   const categoryLabel = categoryConfig ? label(categoryConfig.labels) : subscription.category;
   const categoryColor = categoryConfig?.color ?? DEFAULT_BADGE_COLOR;
-  const categoryBadgeStyle = {
-    backgroundColor: colorWithAlpha(categoryColor, 0.1) ?? undefined,
-    borderColor: colorWithAlpha(categoryColor, 0.2) ?? undefined,
-    color: categoryColor,
-  };
 
+  const [pausing, setPausing] = useState(false);
+  const handingFocusToResume = useRef(false);
+  const moreActionsRef = useRef<HTMLButtonElement>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const daysUntilRenewal = daysBetweenDateOnly(today, subscription.nextBillingDate);
   const daysUntilTrialEnd = subscription.trialEndDate ? daysBetweenDateOnly(today, subscription.trialEndDate) : null;
@@ -238,7 +241,7 @@ function SubscriptionCardComponent({
   const isInactive = isExpired || effectiveStatus === "paused" || effectiveStatus === "cancelled";
   // 这里是展示提示窗口，不等同于 Cron 通知窗口；不要把两者的阈值混用。
   const isRenewingSoon = !isInactive && !isBuyout && daysUntilRenewal <= 7 && daysUntilRenewal >= 0;
-  const isTrialEndingSoon = !isExpired && subscription.status === 'trial' && daysUntilTrialEnd !== null &&
+  const isTrialEndingSoon = effectiveStatus === "trial" && daysUntilTrialEnd !== null &&
     daysUntilTrialEnd <= 3 && daysUntilTrialEnd >= 0;
   const billingDateText = isBuyout && subscription.startDate
     ? t("subscription.card.oneTimeDate", { date: formatDateOnly(subscription.startDate) })
@@ -279,7 +282,7 @@ function SubscriptionCardComponent({
     ...(subscription.startDate && !isBuyout
       ? [{
           key: "start-date",
-          icon: <CalendarClock className="h-3.5 w-3.5 shrink-0" />,
+          icon: <CalendarClock className="h-3 w-3 shrink-0" />,
           text: `${t("subscription.card.startPrefix")} ${formatDateOnly(subscription.startDate)}`,
           tone: "muted" as const,
         }]
@@ -287,7 +290,7 @@ function SubscriptionCardComponent({
     ...(billingDateText
       ? [{
           key: "billing-date",
-          icon: <Calendar className="h-3.5 w-3.5 shrink-0" />,
+          icon: <Calendar className="h-3 w-3 shrink-0" />,
           text: billingDateText,
           tone: "muted" as const,
         }]
@@ -316,6 +319,15 @@ function SubscriptionCardComponent({
           text: paymentMethodLabel,
           tone: "muted" as const,
           truncate: true,
+        }]
+      : []),
+    ...(subscription.balance !== undefined && subscription.balanceCurrency
+      ? [{
+          key: "balance",
+          icon: <Wallet className="h-3.5 w-3.5 shrink-0" />,
+          text: `${t("subscription.field.balance")} ${formatPreciseCurrency(subscription.balance, subscription.balanceCurrency, locale, 6)}`,
+          tone: "muted" as const,
+          tabular: true,
         }]
       : []),
     ...(costSharingSummary.enabled
@@ -370,13 +382,12 @@ function SubscriptionCardComponent({
       onPointerEnter={() => onPrefetchDetails?.(subscription.id)}
       onFocusCapture={() => onPrefetchDetails?.(subscription.id)}
       className={cn(
-        "group relative h-full overflow-hidden rounded-xl border border-border bg-card p-5 shadow-card transition-all duration-300 hover:bg-card-hover",
+        "group relative h-full overflow-hidden rounded-xl border border-border bg-card p-5 shadow-card transition-colors hover:bg-card-hover",
         onViewDetails && "cursor-pointer",
-        selectionMode && "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-        selectionMode && selected && "border-primary/50 bg-primary/5 ring-1 ring-primary/30",
-        isInactive && "border-muted bg-muted/20 hover:bg-muted/30",
-        isRenewingSoon && "border-warning/40",
-        isTrialEndingSoon && "animate-pulse-glow"
+        selectionMode && "cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-card-focus",
+        (isRenewingSoon || isTrialEndingSoon) && "border-warning/40",
+        // 临期与选择可同时成立，选中卡面优先，日期和徽标继续表达业务状态。
+        selectionMode && selected && "border-primary bg-card-selected ring-1 ring-primary/40 hover:bg-card-selected",
       )}
     >
       {selectionMode ? (
@@ -392,7 +403,7 @@ function SubscriptionCardComponent({
         <button
           type="button"
           aria-label={t("subscription.viewDetailsLabel", { name: subscription.name })}
-          className="absolute inset-0 z-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="absolute inset-0 z-0 rounded-xl focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-card-focus"
           onClick={handleViewDetails}
           data-testid="subscription-card-primary-action"
         />
@@ -420,11 +431,11 @@ function SubscriptionCardComponent({
               <p className="truncate text-xl font-bold text-foreground">
                 {formatCurrency(subscription.price, subscription.currency)}
               </p>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-card-caption">
                 {billingCycleLabel}
               </p>
               {priceReferenceLabel ? (
-                <p className="truncate text-xs tabular-nums text-muted-foreground">
+                <p className="truncate text-xs tabular-nums text-card-caption">
                   {priceReferenceLabel}
                 </p>
               ) : null}
@@ -435,13 +446,20 @@ function SubscriptionCardComponent({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="pointer-events-auto h-8 w-8 shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                  className="pointer-events-auto h-8 w-8 shrink-0 text-card-caption transition-colors hover:text-foreground"
+                  data-subscription-actions=""
+                  ref={moreActionsRef}
                   aria-label={t("subscription.moreActions")}
                 >
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className={CARD_ACTION_MENU_CONTENT_CLASSNAME}>
+              <DropdownMenuContent align="end" className={CARD_ACTION_MENU_CONTENT_CLASSNAME} onCloseAutoFocus={(event) => {
+                if (handingFocusToResume.current) {
+                  event.preventDefault();
+                  handingFocusToResume.current = false;
+                }
+              }}>
                 {selectionMode && onViewDetails ? (
                   <DropdownMenuItem className={CARD_ACTION_MENU_ITEM_CLASSNAME} onClick={handleViewDetails}>
                     <Eye className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -470,12 +488,29 @@ function SubscriptionCardComponent({
                     onPointerEnter={preloadRenewSubscriptionDialog}
                     onFocus={preloadRenewSubscriptionDialog}
                     onTouchStart={preloadRenewSubscriptionDialog}
-                    onClick={() => onRenew?.(subscription.id)}
+                    onClick={() => onRenew?.(subscription.id, moreActionsRef.current)}
                   >
                     <RotateCw className="h-4 w-4 shrink-0 text-muted-foreground" />
                     {t("subscription.renew")}
                   </DropdownMenuItem>
                 ) : null}
+                {onPause && (subscription.status === "active" || subscription.status === "trial") && (
+                  <DropdownMenuItem className={CARD_ACTION_MENU_ITEM_CLASSNAME} disabled={pausing} onSelect={() => {
+                    if (subscription.status !== "active" && subscription.status !== "trial") return;
+                    setPausing(true);
+                    void onPause(subscription.id, subscription.status, moreActionsRef.current).finally(() => setPausing(false));
+                  }}>
+                    <Pause className="h-4 w-4 shrink-0 text-muted-foreground" />{t("subscription.pauseTitle")}
+                  </DropdownMenuItem>
+                )}
+                {onEdit && subscription.status === "paused" && (
+                  <DropdownMenuItem className={CARD_ACTION_MENU_ITEM_CLASSNAME} onSelect={() => {
+                    handingFocusToResume.current = true;
+                    onEdit(subscription.id, "resume", moreActionsRef.current);
+                  }}>
+                    <Play className="h-4 w-4 shrink-0 text-muted-foreground" />{t("subscription.resumeMenu")}
+                  </DropdownMenuItem>
+                )}
                 {onTogglePinned ? (
                   <DropdownMenuItem className={CARD_ACTION_MENU_ITEM_CLASSNAME} onClick={() => onTogglePinned(subscription.id)}>
                     {subscription.pinned ? (
@@ -512,7 +547,7 @@ function SubscriptionCardComponent({
                 data-testid="subscription-card-badge-category"
                 variant="outline"
                 className="max-w-full shrink-0 overflow-hidden whitespace-nowrap px-2 text-xs sm:px-2.5"
-                style={categoryBadgeStyle}
+                style={categoryBadgeStyle(categoryColor)}
               >
                 <TruncatedTooltipText text={categoryLabel} className="block max-w-full" />
               </Badge>
@@ -539,7 +574,7 @@ function SubscriptionCardComponent({
             <SubscriptionCardMetaFlow items={metaItems} />
 
             {viewMode === 'list' && !isBuyout && (
-              <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+              <div className="flex min-w-0 items-center gap-1.5 text-card-caption">
                 <Bell className="h-3.5 w-3.5 shrink-0" />
                 <span className="max-w-36 truncate text-xs">
                   {subscription.reminderDays === DISABLED_REMINDER_DAYS
@@ -553,7 +588,7 @@ function SubscriptionCardComponent({
           </div>
 
           {isTrialEndingSoon && subscription.trialEndDate && (
-            <div className="flex items-center gap-2 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
+            <div className="flex items-center gap-2 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning-ink">
               <span className="font-medium">
                 {t("subscription.card.trialEnds", { date: formatDateOnly(subscription.trialEndDate, "monthDay") })}
               </span>
@@ -594,6 +629,7 @@ function areSubscriptionCardPropsEqual(prev: SubscriptionCardProps, next: Subscr
     prev.currencyConvert === next.currencyConvert &&
     prev.currencyRatesReady === next.currencyRatesReady &&
     prev.priceReferenceCurrency === next.priceReferenceCurrency &&
+    prev.onPause === next.onPause &&
     prev.onEdit === next.onEdit &&
     prev.onDelete === next.onDelete &&
     prev.onClone === next.onClone &&
